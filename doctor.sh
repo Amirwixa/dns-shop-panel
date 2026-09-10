@@ -194,6 +194,27 @@ else
   echo -e "  Mode: ${GREEN}SMART${NC} (only proxy-list domains via server)"
   echo "  → Normal sites work even if SNI proxy is down; listed/sanctioned ones need it."
 fi
+sec "8) Firewall (UFW) + IPv6"
+if command -v ufw >/dev/null 2>&1; then
+  UFW_ST=$(ufw status 2>/dev/null | head -1)
+  echo "  UFW: $UFW_ST"
+  if echo "$UFW_ST" | grep -qi "active"; then
+    ufw status 2>/dev/null | grep -E "ALLOW|DENY" | grep -v "(v6)" | sed 's/^/    /' | head -15
+  else
+    echo -e "  ${YELLOW}→ Firewall is OFF: all ports open. Manage from panel (DNS page → 🧱 Firewall).${NC}"
+  fi
+else
+  echo "  UFW: not installed"
+fi
+PUB6=$(curl -s -6 --max-time 8 https://api6.ipify.org 2>/dev/null || echo "")
+SRV6=$(sqlite3 "$DB" "SELECT value FROM settings WHERE key='server_ipv6';" 2>/dev/null || echo "")
+echo "  Actual public IPv6 : ${PUB6:-none}"
+echo "  Panel server_ipv6  : ${SRV6:-(empty = AAAA forced to IPv4)}"
+if [ -n "$PUB6" ] && [ "$PUB6" != "$SRV6" ]; then
+  echo -e "  ${YELLOW}→ Mismatch: save the actual IPv6 in panel for full IPv6 proxy support.${NC}"
+fi
+echo "  DNS on IPv6?       : $(ss -lntup 2>/dev/null | grep -c '\[::\]:53\|:::53' || echo 0) listener(s) on :::53"
+
 echo ""
 echo "  If users get REFUSED a lot: their IP changed → they must open their 🔗 link."
 echo "  Paste this FULL output to your AI assistant for pinpoint diagnosis."
