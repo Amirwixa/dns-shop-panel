@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ورود | DNS Shop Panel</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',Tahoma,Arial,sans-serif;background:linear-gradient(135deg,#0f2027,#203a43,#2c5364);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;color:#fff}
+.card{background:rgba(255,255,255,.08);backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,.15);border-radius:20px;padding:40px 36px;width:100%;max-width:400px;box-shadow:0 20px 60px rgba(0,0,0,.4)}
+.logo{text-align:center;margin-bottom:28px}
+.logo .icon{font-size:52px}
+.logo h1{font-size:22px;margin-top:8px;font-weight:700}
+.logo p{font-size:13px;opacity:.7;margin-top:4px}
+.field{margin-bottom:16px}
+.field label{display:block;font-size:13px;margin-bottom:6px;opacity:.85}
+.field input{width:100%;padding:12px 14px;border-radius:10px;border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.1);color:#fff;font-size:15px;outline:none;transition:.2s;font-family:inherit}
+.field input:focus{border-color:#4fc3f7;background:rgba(255,255,255,.15)}
+.field input::placeholder{color:rgba(255,255,255,.4)}
+button{width:100%;padding:13px;border:none;border-radius:10px;background:linear-gradient(90deg,#2196f3,#21cbf3);color:#fff;font-size:16px;font-weight:700;cursor:pointer;transition:.2s;font-family:inherit}
+button:hover{transform:translateY(-1px);box-shadow:0 8px 20px rgba(33,150,243,.4)}
+button:disabled{opacity:.6;cursor:wait;transform:none}
+.err{background:rgba(244,67,54,.2);border:1px solid rgba(244,67,54,.5);color:#ffcdd2;padding:10px;border-radius:8px;font-size:13px;margin-bottom:14px;display:none}
+.foot{text-align:center;margin-top:20px;font-size:11px;opacity:.5}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="logo"><div class="icon">🌐</div><h1>پنل مدیریت DNS</h1><p>DNS Shop Panel</p></div>
+  <div class="err" id="err"></div>
+  <form id="f">
+    <div class="field"><label>نام کاربری</label><input name="username" placeholder="admin" autocomplete="username" required></div>
+    <div class="field"><label>رمز عبور</label><input name="password" type="password" placeholder="••••••" autocomplete="current-password" required></div>
+    <button id="btn" type="submit">ورود به پنل</button>
+  </form>
+  <div class="foot">نسخه ۱٫۰ — سبک و امن</div>
+</div>
+<script>
+document.getElementById('f').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const btn = document.getElementById('btn'), err = document.getElementById('err');
+  btn.disabled = true; btn.textContent = 'در حال ورود...'; err.style.display = 'none';
+  const fd = new FormData(e.target);
+  try {
+    const r = await fetch('/login', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({username: fd.get('username'), password: fd.get('password')})});
+    const j = await r.json();
+    if (j.ok) location.href = '/';
+    else { err.textContent = j.error || 'خطا'; err.style.display = 'block'; }
+  } catch(ex) { err.textContent = 'خطا در اتصال به سرور'; err.style.display = 'block'; }
+  btn.disabled = false; btn.textContent = 'ورود به پنل';
+});
+</script>
+</body>
+</html>

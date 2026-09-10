@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ثبت IP | سرویس DNS</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',Tahoma,Arial,sans-serif;background:linear-gradient(135deg,#0f2027,#203a43,#2c5364);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;color:#fff}
+.card{background:rgba(255,255,255,.08);backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,.15);border-radius:20px;padding:34px 30px;width:100%;max-width:460px;box-shadow:0 20px 60px rgba(0,0,0,.4);text-align:center}
+.icon{font-size:48px}
+h1{font-size:20px;margin:10px 0 4px}
+.sub{font-size:13px;opacity:.7;margin-bottom:20px}
+.box{background:rgba(0,0,0,.25);border:1px solid rgba(255,255,255,.12);border-radius:12px;padding:14px;margin-bottom:12px;text-align:right;font-size:14px}
+.box .row{display:flex;justify-content:space-between;align-items:center;padding:6px 0;gap:8px}
+.box .row + .row{border-top:1px dashed rgba(255,255,255,.12)}
+code{font-family:monospace;background:rgba(255,255,255,.12);padding:3px 10px;border-radius:6px;direction:ltr;display:inline-block;font-size:14px}
+.msg{border-radius:10px;padding:12px;font-size:14px;margin-bottom:12px;line-height:1.9}
+.ok{background:rgba(63,185,80,.18);border:1px solid rgba(63,185,80,.5);color:#b7f0c0}
+.warn{background:rgba(210,153,34,.15);border:1px solid rgba(210,153,34,.5);color:#f0d49a}
+.err{background:rgba(248,81,73,.15);border:1px solid rgba(248,81,73,.5);color:#ffcdd2}
+button{width:100%;padding:14px;border:none;border-radius:12px;background:linear-gradient(90deg,#2196f3,#21cbf3);color:#fff;font-size:17px;font-weight:700;cursor:pointer;font-family:inherit;transition:.2s;margin-top:6px}
+button:hover{transform:translateY(-1px);box-shadow:0 8px 20px rgba(33,150,243,.4)}
+button:disabled{opacity:.5;cursor:wait;transform:none}
+.hint{margin-top:16px;font-size:12px;line-height:2;opacity:.75;background:rgba(255,255,255,.06);border-radius:10px;padding:10px 14px;text-align:right}
+.foot{margin-top:16px;font-size:11px;opacity:.5}
+</style>
+</head>
+<body>
+<div class="card">
+{% if state == 'invalid' %}
+  <div class="icon">❌</div>
+  <h1>لینک نامعتبر است</h1>
+  <p class="sub">این لینک وجود ندارد یا باطل شده است</p>
+  <div class="msg err">از پشتیبانی بخواه لینک جدید برایت ارسال کند.</div>
+{% elif state == 'expired' %}
+  <div class="icon">⌛</div>
+  <h1>اشتراک به پایان رسیده</h1>
+  <p class="sub">{{ user.name }}</p>
+  <div class="box">
+    <div class="row"><span>تاریخ انقضا</span><code>{{ user.expiry }}</code></div>
+    <div class="row"><span>IP ثبت‌شده</span><code>{{ user.ip }}</code></div>
+  </div>
+  <div class="msg err">برای تمدید اشتراک با پشتیبانی در تماس باش.</div>
+{% else %}
+  <div class="icon">🌐</div>
+  <h1>سلام {{ user.name }} 👋</h1>
+  <p class="sub">ثبت خودکار IP برای سرویس DNS</p>
+
+  {% if result == 'ok' %}
+    <div class="msg ok">✅ IP جدیدت با موفقیت ثبت شد!<br>از این لحظه DNS با اینترنت فعلیت کار می‌کند.</div>
+  {% elif result == 'already' %}
+    <div class="msg ok">✅ این IP قبلاً ثبت شده — همه‌چیز روبه‌راه است.</div>
+  {% elif result == 'cooldown' %}
+    <div class="msg warn">⏳ لطفاً <b><span id="cd">{{ wait }}</span> ثانیه</b> دیگر دوباره تلاش کن.</div>
+  {% endif %}
+
+  <div class="box">
+    <div class="row"><span>📍 IP فعلی تو</span><code>{{ detected }}</code></div>
+    <div class="row"><span>📌 IP ثبت‌شده</span><code>{{ user.ip }}</code></div>
+    <div class="row"><span>📅 اعتبار تا</span><code>{{ user.expiry }} ({{ user.days_left }} روز)</code></div>
+  </div>
+
+  {% if result != 'cooldown' %}
+    {% if detected == user.ip %}
+      <div class="msg ok">🎉 IP تو ثبت است — نیازی به کاری نیست.</div>
+    {% else %}
+      <div class="msg warn">⚠️ IP تو عوض شده! برای وصل شدن DNS، دکمه زیر را بزن:</div>
+      <form method="POST"><button type="submit">✅ ثبت IP فعلی من</button></form>
+    {% endif %}
+  {% endif %}
+
+  <div class="hint">💡 هر وقت اینترنتت عوض شد (وای‌فای ↔ دیتای موبایل)، همین لینک را باز کن و دکمه ثبت را بزن.<br>⚠️ این صفحه را با همان اینترنتی باز کن که می‌خواهی DNS با آن کار کند.</div>
+{% endif %}
+  <div class="foot">🔒 این لینک اختصاصی توست — برای کسی نفرست</div>
+</div>
+{% if result == 'cooldown' %}
+<script>
+let s = {{ wait }}; const el = document.getElementById('cd');
+const t = setInterval(() => { s--; if (s <= 0) { clearInterval(t); location.reload(); } else el.textContent = s; }, 1000);
+</script>
+{% endif %}
+</body>
+</html>

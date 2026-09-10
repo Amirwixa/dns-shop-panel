@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>پنل مدیریت DNS</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar" id="sidebar">
+    <div class="brand"><div class="icon">🌐</div><h2>پنل مدیریت DNS</h2><small>DNS Shop Panel v1.3 (هوشمند 🧠 / کامل 🌐)</small></div>
+    <nav class="nav">
+      <button class="active" data-page="dash"><span class="e">📊</span> داشبورد</button>
+      <button data-page="users"><span class="e">👥</span> کاربران</button>
+      <button data-page="logs"><span class="e">📝</span> لاگ کوئری‌ها</button>
+      <button data-page="dns"><span class="e">⚙️</span> تنظیمات DNS</button>
+      <button data-page="proxy"><span class="e">🔀</span> دامنه‌های پروکسی</button>
+      <button data-page="block"><span class="e">🚫</span> بلاک‌لیست</button>
+      <button data-page="settings"><span class="e">🔧</span> تنظیمات</button>
+    </nav>
+    <div class="side-foot">
+      <div>👤 مدیر: <b>{{ admin }}</b></div>
+      <div style="margin-top:6px">🕒 <span id="clock">--:--</span></div>
+      <button class="logout" onclick="location.href='/logout'">خروج از پنل</button>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="topbar">
+      <div><button class="menu-btn" onclick="document.getElementById('sidebar').classList.toggle('open')">☰</button></div>
+      <div style="flex:1"><h1 id="page-title">داشبورد</h1><div class="sub">وضعیت سرویس: <span id="dns-badge"><span class="badge b-gray">در حال بررسی...</span></span> <span id="srv-time" style="margin-right:10px"></span></div></div>
+      <div><button class="btn gray sm" onclick="refreshAll()">🔄 بروزرسانی</button></div>
+    </div>
+
+    <!-- ===== DASHBOARD ===== -->
+    <section class="page active" id="page-dash">
+      <div class="cards">
+        <div class="card"><div class="t">👥 کل کاربران</div><div class="v" id="c-total">-</div></div>
+        <div class="card"><div class="t">✅ کاربران فعال</div><div class="v" id="c-active" style="color:#7ee787">-</div></div>
+        <div class="card"><div class="t">⚠️ رو به اتمام (۳ روز)</div><div class="v" id="c-expiring" style="color:#e3b341">-</div></div>
+        <div class="card"><div class="t">⛔ منقضی / غیرفعال</div><div class="v" id="c-expired" style="color:#ffa198">-</div></div>
+        <div class="card"><div class="t">📨 کوئری امروز</div><div class="v" id="c-qday">-</div></div>
+        <div class="card"><div class="t">🛡️ بلاک / رد امروز</div><div class="v" id="c-qblock" style="color:#ffa198">-</div></div>
+        <div class="card"><div class="t">🔀 اتصالات پروکسی امروز</div><div class="v" id="c-pxday" style="color:#d2a8ff">-</div></div>
+      </div>
+      <div class="grid2">
+        <div class="panel"><h3>📈 کوئری‌های امروز (ساعتی)</h3><canvas class="chart" id="ch-hour" width="600" height="180"></canvas></div>
+        <div class="panel"><h3>📅 کوئری‌های ۷ روز اخیر</h3><canvas class="chart" id="ch-day" width="600" height="180"></canvas></div>
+      </div>
+      <div class="grid2">
+        <div class="panel"><h3>🌍 پرتکرارترین دامنه‌های امروز</h3><div id="top-domains"><div class="empty">داده‌ای نیست</div></div></div>
+        <div class="panel"><h3>🔥 پرمصرف‌ترین کاربران امروز</h3><div id="top-users"><div class="empty">داده‌ای نیست</div></div></div>
+      </div>
+      <div class="grid2">
+        <div class="panel"><h3>🖥️ وضعیت سرور</h3><div class="sys" id="sysbox"></div></div>
+        <div class="panel"><h3>🚨 آخرین بلاک / رد شده‌ها</h3><div id="recent-blocked"><div class="empty">موردی نیست 🎉</div></div></div>
+      </div>
+      <div class="panel"><h3>🔀 آخرین اتصالات پروکسی (رفع تحریم)</h3><div id="recent-proxy"><div class="empty">هنوز اتصالی ثبت نشده</div></div></div>
+    </section>
+
+    <!-- ===== USERS ===== -->
+    <section class="page" id="page-users">
+      <div class="panel">
+        <div class="toolbar">
+          <input id="u-search" placeholder="🔍 جستجو نام / IP / توضیح..." oninput="loadUsers()">
+          <select id="u-status" onchange="loadUsers()">
+            <option value="all">همه</option><option value="active">فعال</option>
+            <option value="expired">منقضی</option><option value="expiring">رو به اتمام</option>
+            <option value="disabled">غیرفعال</option>
+          </select>
+          <button class="btn green" onclick="openModal('m-user')">➕ کاربر جدید</button>
+        </div>
+        <div style="overflow-x:auto"><table>
+          <thead><tr><th>#</th><th>نام</th><th>IP</th><th>انقضا</th><th>مانده</th><th>وضعیت</th><th>کوئری</th><th>آخرین استفاده</th><th>عملیات</th></tr></thead>
+          <tbody id="users-tbody"><tr><td colspan="9" class="empty">در حال بارگذاری...</td></tr></tbody>
+        </table></div>
+      </div>
+    </section>
+
+    <!-- ===== LOGS ===== -->
+    <section class="page" id="page-logs">
+      <div class="panel">
+        <div class="toolbar">
+          <input id="l-domain" placeholder="🔍 فیلتر دامنه..." oninput="loadLogs()">
+          <select id="l-action" onchange="loadLogs()">
+            <option value="">همه وضعیت‌ها</option><option value="allowed">✅ مجاز</option>
+            <option value="proxied">🔀 پروکسی</option>
+            <option value="custom">⭐ کاستوم</option><option value="blocked">🚫 بلاک</option>
+            <option value="refused">⛔ رد (IP ناشناس)</option><option value="expired">⌛ منقضی</option>
+          </select>
+          <button class="btn gray sm" onclick="loadLogs()">🔄</button>
+          <button class="btn red sm" onclick="clearLogs()">🗑 پاک‌سازی لاگ‌ها</button>
+        </div>
+        <label class="switch"><input type="checkbox" id="l-auto" checked> بروزرسانی خودکار (هر ۵ ثانیه)</label>
+        <div style="overflow-x:auto;margin-top:10px"><table>
+          <thead><tr><th>زمان</th><th>کاربر</th><th>IP مبدا</th><th>دامنه</th><th>نوع</th><th>وضعیت</th><th>زمان پاسخ</th></tr></thead>
+          <tbody id="logs-tbody"></tbody>
+        </table></div>
+        <div class="pager"><button class="btn gray sm" onclick="logPage(-1)">→ قبلی</button><span id="log-info"></span><button class="btn gray sm" onclick="logPage(1)">بعدی ←</button></div>
+      </div>
+    </section>
+
+    <!-- ===== DNS SETTINGS ===== -->
+    <section class="page" id="page-dns">
+      <div class="panel"><h3>🎚️ حالت سرویس DNS</h3>
+        <div class="form-grid">
+          <label class="mode-card" id="mc-smart"><input type="radio" name="dnsmode" value="smart" onchange="modeChanged()"><span class="t">🧠 هوشمند (مثل شکن)</span><div class="d">فقط دامنه‌های «لیست پروکسی» از سرور شما عبور می‌کنند؛ بقیه سایت‌ها مستقیم وصل می‌شوند. مصرف کمتر، سرعت بیشتر.</div></label>
+          <label class="mode-card" id="mc-full"><input type="radio" name="dnsmode" value="full" onchange="modeChanged()"><span class="t">🌐 کامل (تمام دستگاه)</span><div class="d">همه دامنه‌ها به IP سرور شما برمی‌گردند و کل وب‌گردی مشتری از سرور عبور می‌کند — بدون نیاز به لیست.</div></label>
+        </div>
+        <div class="warnbox" id="full-warn" style="display:none">⚠️ <b>حالت کامل:</b> همه وب‌گردی مشتریان از سرور شما عبور می‌کند (پهنای باند و CPU بیشتر مصرف می‌شود).<br>⚠️ اپ‌هایی که پورت غیر وب دارند (بازی‌های آنلاین UDP، تماس صوتی/تصویری، ایمیل و...) ممکن است کار نکنند — این محدودیت ذاتی DNS است و فقط با VPN واقعی حل می‌شود.<br>ℹ️ نام‌های شبکه داخلی (localhost و...) خودکار مستثنی هستند و بلاک‌لیست همچنان کار می‌کند.</div>
+        <button class="btn" style="margin-top:14px" onclick="saveMode()">💾 ذخیره حالت</button>
+      </div>
+      <div class="panel"><h3>🌐 آپ‌استریم‌ها و کش</h3>
+        <div class="form-grid">
+          <div class="f-field"><label>آپ‌استریم اول</label><input id="s-up1" class="ltr" placeholder="8.8.8.8"></div>
+          <div class="f-field"><label>آپ‌استریم دوم</label><input id="s-up2" class="ltr" placeholder="1.1.1.1"></div>
+          <div class="f-field"><label>تایم‌اوت آپ‌استریم (ثانیه)</label><input id="s-timeout" class="ltr" type="number" min="1" max="15"></div>
+          <div class="f-field"><label>مدت کش (ثانیه)</label><input id="s-ttl" class="ltr" type="number" min="0" max="86400"></div>
+        </div>
+        <div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:10px">
+          <label class="switch"><input type="checkbox" id="s-cache"> فعال بودن کش</label>
+          <label class="switch"><input type="checkbox" id="s-log"> ثبت لاگ کوئری‌ها</label>
+          <label class="switch"><input type="checkbox" id="s-block"> فعال بودن بلاک‌لیست</label>
+          <label class="switch"><input type="checkbox" id="s-refuse"> رد IPهای ناشناس (توصیه می‌شود)</label>
+          <label class="switch"><input type="checkbox" id="s-sni"> فعال بودن پروکسی رفع تحریم (SNI)</label>
+        </div>
+        <div class="form-grid" style="margin-top:12px">
+          <div class="f-field"><label>🌍 IP عمومی سرور (برای دامنه‌های پروکسی)</label><input id="s-serverip" class="ltr" placeholder="مثلاً 1.2.3.4"></div>
+          <div class="f-field"><label>نگهداری لاگ (روز)</label><input id="s-retention" class="ltr" type="number" min="1" max="90"></div>
+          <div class="f-field"><label>⏳ حداقل فاصله ثبت IP توسط کاربر (ثانیه)</label><input id="s-cooldown" class="ltr" type="number" min="0" max="86400"></div>
+        </div>
+        <button class="btn" style="margin-top:14px" onclick="saveSettings()">💾 ذخیره تنظیمات</button>
+        <div class="hint" style="color:var(--muted);font-size:12px;margin-top:8px">تنظیمات حداکثر تا ۳۰ ثانیه بعد روی سرویس DNS اعمال می‌شود (بدون نیاز به ری‌استارت).</div>
+      </div>
+      <div class="panel"><h3>⭐ رکوردهای اختصاصی (دامنه ← IP)</h3>
+        <div class="toolbar"><input id="r-domain" class="ltr" placeholder="example.com"><input id="r-ip" class="ltr" placeholder="1.2.3.4" style="max-width:160px"><button class="btn sm" onclick="addRule()">➕ افزودن</button></div>
+        <div style="overflow-x:auto"><table><thead><tr><th>دامنه</th><th>IP مقصد</th><th>وضعیت</th><th>عملیات</th></tr></thead><tbody id="rules-tbody"></tbody></table></div>
+      </div>
+    </section>
+
+    <!-- ===== PROXY DOMAINS ===== -->
+    <section class="page" id="page-proxy">
+      <div class="panel"><h3>🔀 دامنه‌های پروکسی — رفع تحریم مثل شکن/شلتر (<span id="proxy-count">0</span>)</h3>
+        <p style="font-size:13px;color:var(--muted);line-height:2;margin-bottom:12px">این دامنه‌ها (مثل بایننس، OpenAI و...) به‌جای IP اصلی، <b>IP همین سرور</b> را می‌گیرند <span style="color:#e3b341">(در «حالت کامل» این لیست استفاده نمی‌شود — همه دامنه‌ها خودکار پروکسی می‌شوند.)</span> و ترافیکشان از سرور شما عبور می‌کند؛ پس سایت مقصد IP ایرانی نمی‌بیند و تحریم اعمال نمی‌شود. ساب‌دامین‌ها خودکار شامل می‌شوند.</p>
+        <div class="toolbar"><input id="p-domain" class="ltr" placeholder="example.com"><button class="btn sm" onclick="addProxy()">➕ افزودن</button><button class="btn yellow sm" onclick="openModal('m-pbulk')">📥 افزودن گروهی</button><button class="btn gray sm" onclick="seedProxy()">⭐ برگرداندن لیست پیش‌فرض</button><button class="btn red sm" onclick="clearProxy()">🗑 پاک‌سازی همه</button></div>
+        <div style="overflow-x:auto"><table><thead><tr><th>#</th><th>دامنه</th><th>وضعیت</th><th>تاریخ</th><th>عملیات</th></tr></thead><tbody id="proxy-tbody"></tbody></table></div>
+      </div>
+      <div class="panel"><h3>📡 لاگ اتصالات پروکسی</h3>
+        <div class="toolbar"><input id="pl-sni" class="ltr" placeholder="🔍 فیلتر SNI / دامنه..." oninput="loadProxyLogs()"><button class="btn gray sm" onclick="loadProxyLogs()">🔄</button><button class="btn red sm" onclick="clearProxyLogs()">🗑 پاک‌سازی</button></div>
+        <div style="overflow-x:auto"><table><thead><tr><th>زمان</th><th>کاربر</th><th>IP مبدا</th><th>SNI / دامنه</th><th>IP مقصد</th><th>حجم</th><th>وضعیت</th></tr></thead><tbody id="plogs-tbody"></tbody></table></div>
+      </div>
+    </section>
+
+    <!-- ===== BLOCKLIST ===== -->
+    <section class="page" id="page-block">
+      <div class="panel"><h3>🚫 بلاک‌لیست دامنه‌ها (<span id="block-count">0</span>)</h3>
+        <div class="toolbar"><input id="b-domain" class="ltr" placeholder="ads.example.com"><button class="btn sm" onclick="addBlock()">➕ افزودن</button><button class="btn yellow sm" onclick="openModal('m-bulk')">📥 افزودن گروهی</button><button class="btn red sm" onclick="clearBlock()">🗑 پاک‌سازی همه</button></div>
+        <div style="overflow-x:auto"><table><thead><tr><th>#</th><th>دامنه</th><th>تاریخ</th><th>عملیات</th></tr></thead><tbody id="block-tbody"></tbody></table></div>
+        <div class="hint" style="color:var(--muted);font-size:12px;margin-top:8px">ساب‌دامین‌ها هم خودکار بلاک می‌شوند (مثلاً با بلاک example.com، آدرس sub.example.com هم بلاک می‌شود).</div>
+      </div>
+    </section>
+
+    <!-- ===== SETTINGS ===== -->
+    <section class="page" id="page-settings">
+      <div class="panel"><h3>🔑 تغییر رمز مدیر</h3>
+        <div class="form-grid">
+          <div class="f-field"><label>رمز فعلی</label><input id="p-cur" type="password"></div>
+          <div class="f-field"><label>رمز جدید</label><input id="p-new" type="password"></div>
+        </div>
+        <button class="btn" onclick="changePass()">تغییر رمز</button>
+      </div>
+      <div class="panel"><h3>💾 پشتیبان‌گیری</h3>
+        <p style="font-size:13px;color:var(--muted);margin-bottom:12px">دانلود فایل دیتابیس (شامل کاربران، تنظیمات و لاگ‌ها):</p>
+        <button class="btn gray" onclick="location.href='/api/backup'">⬇ دانلود بکاپ</button>
+      </div>
+      <div class="panel"><h3>📖 راهنمای اتصال کاربر</h3>
+        <p style="font-size:13px;line-height:2">۱. در پنل، کاربر را با <b>IP عمومی</b> او بسازید (کاربر می‌تواند با جستجوی «my ip» آن را ببیند).<br>
+        ۲. IP سرور (<code id="srv-ip">...</code>) را به‌عنوان DNS روی دستگاه کاربر ست کنید:<br>
+        &nbsp;&nbsp;• <b>اندروید:</b> Settings ← Network ← Private DNS را Off کنید، سپس در Wi-Fi گزینه IP Settings روی Static و DNS 1 را IP سرور بگذارید.<br>
+        &nbsp;&nbsp;• <b>آیفون:</b> Wi-Fi ← ⓘ ← Configure DNS روی Manual و IP سرور را اضافه کنید.<br>
+        &nbsp;&nbsp;• <b>ویندوز:</b> Network Adapter ← IPv4 Properties ← Use the following DNS و IP سرور.<br>
+        &nbsp;&nbsp;• <b>پلی‌استیشن / ایکس‌باکس:</b> Network Settings ← DNS Manual و IP سرور را وارد کنید.<br>
+        ۳. تست: <code class="ltr">nslookup google.com <span class="srv-ip-2"></span></code></p>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- modals -->
+<div class="modal" id="m-user"><div class="box">
+  <h3 id="mu-title">➕ کاربر جدید</h3>
+  <input type="hidden" id="mu-id">
+  <div class="f-field"><label>نام / نام‌کاربری *</label><input id="mu-name" placeholder="مثلاً علی رضایی"></div>
+  <div class="f-field"><label>آدرس IP کاربر *</label><input id="mu-ip" class="ltr" placeholder="5.6.7.8"><div class="hint">IP عمومی کاربر — فقط همین IP اجازه استفاده دارد.</div></div>
+  <div class="f-field" id="mu-days-wrap"><label>مدت اعتبار (روز) *</label><input id="mu-days" class="ltr" type="number" value="30" min="1" max="3650"></div>
+  <div class="f-field" id="mu-exp-wrap" style="display:none"><label>تاریخ انقضا (YYYY-MM-DD)</label><input id="mu-exp" class="ltr" placeholder="2026-10-10"></div>
+  <div class="f-field"><label>توضیحات</label><input id="mu-notes" placeholder="اختیاری..."></div>
+  <div class="row"><button class="btn" onclick="saveUser()">💾 ذخیره</button><button class="btn gray" onclick="closeModal('m-user')">انصراف</button></div>
+</div></div>
+
+<div class="modal" id="m-extend"><div class="box">
+  <h3>⏳ تمدید اشتراک</h3>
+  <input type="hidden" id="me-id">
+  <div class="f-field"><label>چند روز اضافه شود؟</label><input id="me-days" class="ltr" type="number" value="30" min="1" max="3650"></div>
+  <div class="row"><button class="btn" onclick="doExtend()">تمدید</button><button class="btn gray" onclick="closeModal('m-extend')">انصراف</button></div>
+</div></div>
+
+<div class="modal" id="m-bulk"><div class="box">
+  <h3>📥 افزودن گروهی بلاک‌لیست</h3>
+  <div class="f-field"><label>هر خط یک دامنه</label><textarea id="mb-text" rows="8" class="ltr" placeholder="ads.example.com&#10;tracker.example.net"></textarea></div>
+  <div class="row"><button class="btn" onclick="doBulk()">افزودن</button><button class="btn gray" onclick="closeModal('m-bulk')">انصراف</button></div>
+</div></div>
+
+<div class="modal" id="m-pbulk"><div class="box">
+  <h3>📥 افزودن گروهی دامنه پروکسی</h3>
+  <div class="f-field"><label>هر خط یک دامنه</label><textarea id="mp-text" rows="8" class="ltr" placeholder="example.com&#10;api.example.com"></textarea></div>
+  <div class="row"><button class="btn" onclick="doProxyBulk()">افزودن</button><button class="btn gray" onclick="closeModal('m-pbulk')">انصراف</button></div>
+</div></div>
+
+<div class="modal" id="m-link"><div class="box">
+  <h3>🔗 لینک ثبت خودکار IP</h3>
+  <p style="font-size:13px;color:var(--muted);margin-bottom:12px">کاربر: <b id="ml-name" style="color:var(--txt)"></b></p>
+  <input type="hidden" id="ml-id">
+  <div class="f-field"><label>لینک اختصاصی (این را برای کاربر بفرست)</label><input id="ml-link" class="ltr" readonly onclick="this.select()"></div>
+  <p style="font-size:12px;color:var(--muted);line-height:2">کاربر با باز کردن این لینک و زدن دکمه، IP جدید خودش را خودکار ثبت می‌کند — حتی اگر روزی چند بار عوض شود. اگر لینک لو رفت، «لینک جدید» بساز (قبلی باطل می‌شود).</p>
+  <div class="row"><button class="btn" onclick="copyLink()">📋 کپی لینک</button><button class="btn yellow" onclick="regenLink()">♻️ لینک جدید</button></div>
+  <div class="row"><button class="btn gray" onclick="closeModal('m-link')">بستن</button></div>
+</div></div>
+
+<div id="toasts"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>

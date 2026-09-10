@@ -1,0 +1,11 @@
+# DNS Shop Panel - never commit live data/secrets
+data/
+*.db
+*.db-wal
+*.db-shm
+__pycache__/
+*.pyc
+*.tar.gz
+*.zip
+venv/
+config.env
