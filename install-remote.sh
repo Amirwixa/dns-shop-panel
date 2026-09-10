@@ -9,13 +9,13 @@
 set -e
 
 # ↓↓↓ EDIT THIS after creating your GitHub repo (or pass GITHUB_REPO env) ↓↓↓
-REPO="${GITHUB_REPO:-YOUR_USER/dns-shop-panel}"
+REPO="${GITHUB_REPO:-Amirwixa/dns-shop-panel}"
 BRANCH="${GITHUB_BRANCH:-main}"
 DEST="${INSTALL_SRC:-/root/dns-shop-panel}"
 TARBALL_URL="${REPO_TARBALL_URL:-https://github.com/$REPO/archive/refs/heads/$BRANCH.tar.gz}"
 
 if [[ $EUID -ne 0 ]]; then echo "Please run as root: sudo bash <(curl -fsSL ...)"; exit 1; fi
-if [[ "$REPO" == "YOUR_USER/dns-shop-panel" && -z "${REPO_TARBALL_URL:-}" ]]; then
+if [[ "$REPO" == "Amirwixa/dns-shop-panel" && -z "${REPO_TARBALL_URL:-}" ]]; then
   echo "ERROR: edit install-remote.sh and set your GitHub REPO (USER/REPO) first."
   echo "See PUSH_TO_GITHUB.md for instructions."
   exit 1

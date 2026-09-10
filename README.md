@@ -9,7 +9,7 @@ IPهای ناشناس یا منقضی‌شده خودکار **رد** می‌شو
 روی سرور اوبونتو (root):
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/YOUR_USER/dns-shop-panel/main/install-remote.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/Amirwixa/dns-shop-panel/main/install-remote.sh)
 ```
 
 - سرور تازه → نصب کامل خودکار (DNS + پروکسی + پنل)
