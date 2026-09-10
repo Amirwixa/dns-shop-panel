@@ -3,12 +3,13 @@
 # in-memory cache, blocklist, custom rules, per-query logging.
 import socket
 import threading
+import ipaddress
 import time
 import queue
 from datetime import datetime
 
 try:
-    from dnslib import DNSRecord, DNSHeader, RR, QTYPE, RCODE, A
+    from dnslib import DNSRecord, DNSHeader, RR, QTYPE, RCODE, A, AAAA
 except ImportError:
     raise SystemExit("dnslib is not installed. Run: pip install -r requirements.txt")
 
@@ -84,6 +85,8 @@ class SmartDNSServer:
         self.blocked = set()    # domains
         self.proxy_set = set()  # Shekan-like domains -> resolve to our server IP
         self.server_ip = ""
+        self.server_ipv6 = ""
+        self.ipv6_ready = False
         self.settings = {}
         self.stats = DNSStats()
         self.log_queue = queue.Queue(maxsize=10000)
@@ -99,6 +102,7 @@ class SmartDNSServer:
             old_proxy = self.proxy_set
             self.proxy_set = new_proxy
             self.server_ip = (self.settings.get("server_ip") or "").strip()
+            self.server_ipv6 = (self.settings.get("server_ipv6") or "").strip()
             new_mode = self.settings.get("dns_mode", "smart")
             if new_mode != getattr(self, "_last_mode", new_mode):
                 self._last_mode = new_mode
@@ -117,7 +121,7 @@ class SmartDNSServer:
 
     def _reloader_loop(self):
         while self.running:
-            time.sleep(30)
+            time.sleep(15)
             self.reload_config()
             # prune expired cache
             now = time.time()
@@ -185,25 +189,38 @@ class SmartDNSServer:
         return False
 
     def _forward(self, data):
-        upstreams = [self.settings.get("upstream1", "8.8.8.8"), self.settings.get("upstream2", "1.1.1.1")]
+        upstreams = [u for u in (self.settings.get("upstream1", "8.8.8.8"),
+                                 self.settings.get("upstream2", "1.1.1.1")) if u]
+        # fastest-first: order by learned latency (EMA), unknown = 0 (try first)
+        ema = getattr(self, "_ups_ema", {})
+        upstreams.sort(key=lambda u: ema.get(u, 0))
         try:
-            timeout = int(self.settings.get("upstream_timeout", "5"))
+            timeout = int(self.settings.get("upstream_timeout", "2"))
         except Exception:
-            timeout = 5
+            timeout = 2
+        timeout = min(max(timeout, 1), 10)
         last_err = None
         for ups in upstreams:
-            if not ups:
-                continue
             try:
                 t0 = time.time()
-                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                try:
+                    fam = socket.AF_INET6 if isinstance(ipaddress.ip_address(ups), ipaddress.IPv6Address) else socket.AF_INET
+                except Exception:
+                    fam = socket.AF_INET
+                s = socket.socket(fam, socket.SOCK_DGRAM)
                 s.settimeout(timeout)
                 s.sendto(data, (ups, 53))
                 resp, _ = s.recvfrom(4096)
                 s.close()
-                return resp, int((time.time() - t0) * 1000)
+                ms = int((time.time() - t0) * 1000)
+                prev = ema.get(ups)
+                ema[ups] = ms if prev is None else int(prev * 0.7 + ms * 0.3)
+                self._ups_ema = ema
+                return resp, ms
             except Exception as e:
                 last_err = e
+                ema[ups] = ema.get(ups, 1000) + 2000  # penalize failures
+                self._ups_ema = ema
                 continue
         raise last_err or Exception("all upstreams failed")
 
@@ -220,54 +237,86 @@ class SmartDNSServer:
         domain = str(q.qname).rstrip(".").lower()
         qt = qtype_name(q.qtype)
 
-        user = self.allowed_ips.get(client_ip)
+        user = db.find_in_map(self.allowed_ips, client_ip)
         if user is None:
-            # check if IP belongs to expired/disabled user for better logging
+            # INSTANT ACTIVATION: RAM map refreshes every 15s, but a just-updated
+            # IP must work immediately -> fast DB check before refusing.
             try:
-                full = db.get_user_by_ip(client_ip)
+                full = db.get_user_by_ip_smart(client_ip)
             except Exception:
                 full = None
-            if full and (full["is_expired"] or full["status"] != "active"):
+            if full and not full["is_expired"] and full["status"] == "active":
+                user = full
+                try:
+                    self.allowed_ips[db.normalize_ip(client_ip)] = full
+                except Exception:
+                    pass
+            elif full and (full["is_expired"] or full["status"] != "active"):
                 self.stats.bump("refused")
                 self._log(full["id"], client_ip, domain, qt, "expired")
                 reply = req.reply()
                 reply.header.rcode = RCODE.REFUSED
                 return reply.pack()
-            if self.settings.get("refuse_unlisted", "1") == "1":
+            if user is None and self.settings.get("refuse_unlisted", "1") == "1":
                 self.stats.bump("refused")
                 self._log(None, client_ip, domain, qt, "refused")
                 reply = req.reply()
                 reply.header.rcode = RCODE.REFUSED
                 return reply.pack()
-            uid = None  # open-resolver mode (NOT recommended for paid service)
+            # user found via instant-activation, or open-resolver mode
+            uid = user["id"] if user else None
         else:
             uid = user["id"]
 
         # 1) blocklist
-        if q.qtype == QTYPE.A and self._is_blocked(domain):
+        if q.qtype in (QTYPE.A, QTYPE.AAAA) and self._is_blocked(domain):
             self.stats.bump("blocked")
             self._log(uid, client_ip, domain, qt, "blocked")
             reply = req.reply()
-            reply.add_answer(RR(q.qname, QTYPE.A, rdata=A("0.0.0.0"), ttl=60))
-            return reply.pack()
-
-        # 2) custom rules
-        custom_ip = self._custom_ip(domain) if q.qtype == QTYPE.A else None
-        if custom_ip:
-            self.stats.bump("allowed")
-            self._log(uid, client_ip, domain, qt, "custom")
-            reply = req.reply()
             try:
-                reply.add_answer(RR(q.qname, QTYPE.A, rdata=A(custom_ip), ttl=300))
+                if q.qtype == QTYPE.AAAA:
+                    reply.add_answer(RR(q.qname, QTYPE.AAAA, rdata=AAAA("::"), ttl=60))
+                else:
+                    reply.add_answer(RR(q.qname, QTYPE.A, rdata=A("0.0.0.0"), ttl=60))
             except Exception:
                 reply.header.rcode = RCODE.SERVFAIL
             return reply.pack()
+
+        # 2) custom rules
+        custom_ip = self._custom_ip(domain) if q.qtype in (QTYPE.A, QTYPE.AAAA) else None
+        if custom_ip:
+            try:
+                is6 = isinstance(ipaddress.ip_address(custom_ip), ipaddress.IPv6Address)
+            except Exception:
+                is6 = False
+            if (q.qtype == QTYPE.AAAA) == is6:
+                self.stats.bump("allowed")
+                self._log(uid, client_ip, domain, qt, "custom")
+                reply = req.reply()
+                try:
+                    if is6:
+                        reply.add_answer(RR(q.qname, QTYPE.AAAA, rdata=AAAA(custom_ip), ttl=300))
+                    else:
+                        reply.add_answer(RR(q.qname, QTYPE.A, rdata=A(custom_ip), ttl=300))
+                except Exception:
+                    reply.header.rcode = RCODE.SERVFAIL
+                return reply.pack()
 
         # 2.5) proxy domains (Shekan-like): return OUR server IP so traffic
         #     goes through our SNI proxy and sanctions don't trigger.
         if self._is_proxied(domain):
             if q.qtype == QTYPE.AAAA:
-                # force IPv4 so traffic goes through our SNI proxy
+                if self.server_ipv6:
+                    # full IPv6: client connects to our SNI proxy over IPv6
+                    self.stats.bump("allowed")
+                    self._log(uid, client_ip, domain, qt, "proxied")
+                    reply = req.reply()
+                    try:
+                        reply.add_answer(RR(q.qname, QTYPE.AAAA, rdata=AAAA(self.server_ipv6), ttl=60))
+                    except Exception:
+                        reply.header.rcode = RCODE.SERVFAIL
+                    return reply.pack()
+                # no server IPv6 configured: force IPv4 so traffic goes through our SNI proxy
                 self.stats.bump("allowed")
                 self._log(uid, client_ip, domain, qt, "proxied")
                 return req.reply().pack()  # NOERROR + no answers (NODATA)
@@ -310,17 +359,27 @@ class SmartDNSServer:
                     max_n = int(self.settings.get("cache_max", "10000"))
                 except Exception:
                     ttl, max_n = 300, 10000
-                # only cache successful NOERROR responses
                 try:
                     parsed = DNSRecord.parse(resp_data)
-                    if parsed.header.rcode == RCODE.NOERROR and parsed.rr:
+                    code = parsed.header.rcode
+                    if code == RCODE.NOERROR and parsed.rr:
+                        # TTL-aware: honor upstream TTL, capped by cache_ttl
+                        try:
+                            min_ttl = min(r.ttl for r in parsed.rr)
+                        except Exception:
+                            min_ttl = ttl
+                        eff = min(max(min_ttl, 5), ttl)
                         with self.cache_lock:
                             if len(self.cache) >= max_n:
                                 # evict oldest 10%
                                 keys = list(self.cache.keys())[: max_n // 10 or 1]
                                 for k in keys:
                                     self.cache.pop(k, None)
-                            self.cache[ckey] = (resp_data, time.time() + ttl)
+                            self.cache[ckey] = (resp_data, time.time() + eff)
+                    elif code == RCODE.NXDOMAIN:
+                        # negative cache: NXDOMAIN for 60s (never cache SERVFAIL)
+                        with self.cache_lock:
+                            self.cache[ckey] = (resp_data, time.time() + 60)
                 except Exception:
                     pass
             return resp_data
@@ -348,6 +407,59 @@ class SmartDNSServer:
                 continue
             threading.Thread(target=self._serve_udp, args=(sock, data, addr), daemon=True).start()
         sock.close()
+
+    def _udp6_loop(self):
+        try:
+            sock = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            except Exception:
+                pass
+            sock.bind(("::", self.port))
+        except Exception as e:
+            print(f"[DNS] IPv6 UDP unavailable, skipping ({e})", flush=True)
+            return
+        sock.settimeout(2)
+        self.ipv6_ready = True
+        print(f"[DNS] UDPv6 listening on [::]:{self.port}", flush=True)
+        while self.running:
+            try:
+                data, addr = sock.recvfrom(4096)
+            except socket.timeout:
+                continue
+            except Exception as e:
+                print(f"[DNS] udp6 recv error: {e}", flush=True)
+                continue
+            threading.Thread(target=self._serve_udp, args=(sock, data, addr), daemon=True).start()
+        sock.close()
+
+    def _tcp6_loop(self):
+        try:
+            srv = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+            srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                srv.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            except Exception:
+                pass
+            srv.bind(("::", self.port))
+            srv.listen(50)
+        except Exception as e:
+            print(f"[DNS] IPv6 TCP unavailable, skipping ({e})", flush=True)
+            return
+        srv.settimeout(2)
+        self.ipv6_ready = True
+        print(f"[DNS] TCPv6 listening on [::]:{self.port}", flush=True)
+        while self.running:
+            try:
+                conn, addr = srv.accept()
+            except socket.timeout:
+                continue
+            except Exception as e:
+                print(f"[DNS] tcp6 accept error: {e}", flush=True)
+                continue
+            threading.Thread(target=self._serve_tcp, args=(conn, addr), daemon=True).start()
+        srv.close()
 
     def _serve_udp(self, sock, data, addr):
         try:
@@ -417,6 +529,8 @@ class SmartDNSServer:
         threading.Thread(target=self._log_worker, daemon=True).start()
         threading.Thread(target=self._udp_loop, daemon=True).start()
         threading.Thread(target=self._tcp_loop, daemon=True).start()
+        threading.Thread(target=self._udp6_loop, daemon=True).start()
+        threading.Thread(target=self._tcp6_loop, daemon=True).start()
 
     def stop(self):
         self.running = False
