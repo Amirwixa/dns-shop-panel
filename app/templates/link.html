@@ -3,76 +3,94 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ثبت IP | سرویس DNS</title>
+<title>شناسایی شبکه | سرویس اختصاصی</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;700;800&display=swap" rel="stylesheet">
 <style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:'Segoe UI',Tahoma,Arial,sans-serif;background:linear-gradient(135deg,#0f2027,#203a43,#2c5364);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;color:#fff}
-.card{background:rgba(255,255,255,.08);backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,.15);border-radius:20px;padding:34px 30px;width:100%;max-width:460px;box-shadow:0 20px 60px rgba(0,0,0,.4);text-align:center}
-.icon{font-size:48px}
-h1{font-size:20px;margin:10px 0 4px}
-.sub{font-size:13px;opacity:.7;margin-bottom:20px}
-.box{background:rgba(0,0,0,.25);border:1px solid rgba(255,255,255,.12);border-radius:12px;padding:14px;margin-bottom:12px;text-align:right;font-size:14px}
-.box .row{display:flex;justify-content:space-between;align-items:center;padding:6px 0;gap:8px}
-.box .row + .row{border-top:1px dashed rgba(255,255,255,.12)}
-code{font-family:monospace;background:rgba(255,255,255,.12);padding:3px 10px;border-radius:6px;direction:ltr;display:inline-block;font-size:14px}
-.msg{border-radius:10px;padding:12px;font-size:14px;margin-bottom:12px;line-height:1.9}
-.ok{background:rgba(63,185,80,.18);border:1px solid rgba(63,185,80,.5);color:#b7f0c0}
-.warn{background:rgba(210,153,34,.15);border:1px solid rgba(210,153,34,.5);color:#f0d49a}
-.err{background:rgba(248,81,73,.15);border:1px solid rgba(248,81,73,.5);color:#ffcdd2}
-button{width:100%;padding:14px;border:none;border-radius:12px;background:linear-gradient(90deg,#2196f3,#21cbf3);color:#fff;font-size:17px;font-weight:700;cursor:pointer;font-family:inherit;transition:.2s;margin-top:6px}
-button:hover{transform:translateY(-1px);box-shadow:0 8px 20px rgba(33,150,243,.4)}
-button:disabled{opacity:.5;cursor:wait;transform:none}
-.hint{margin-top:16px;font-size:12px;line-height:2;opacity:.75;background:rgba(255,255,255,.06);border-radius:10px;padding:10px 14px;text-align:right}
-.foot{margin-top:16px;font-size:11px;opacity:.5}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: 'Vazirmatn', sans-serif;
+  background: radial-gradient(circle at 100% 100%, #3a0815 0%, #0d0d12 70%);
+  background-color: #0d0d12; color: #f1f5f9; min-height: 100vh;
+  display: flex; align-items: center; justify-content: center; padding: 20px;
+}
+.card {
+  background: rgba(20, 15, 18, 0.5); backdrop-filter: blur(24px);
+  border: 1px solid rgba(226, 38, 88, 0.1); border-radius: 28px;
+  padding: 40px 35px; width: 100%; max-width: 480px; text-align: center;
+  box-shadow: 0 40px 80px rgba(0,0,0,0.7); animation: slideUp 0.5s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+@keyframes slideUp { from { opacity: 0; transform: translateY(30px) scale(0.95); } to { opacity: 1; transform: none; } }
+.icon { font-size: 54px; line-height: 1; margin-bottom: 15px; }
+h1 { font-size: 22px; margin-bottom: 6px; font-weight: 800; color: #fff; }
+.sub { font-size: 14px; color: #94a3b8; margin-bottom: 25px; }
+.box {
+  background: rgba(0, 0, 0, 0.4); border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 16px; padding: 18px; margin-bottom: 16px; text-align: right;
+}
+.box .row { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; font-size: 14px; color: #cbd5e1; }
+.box .row:not(:last-child) { border-bottom: 1px solid rgba(255, 255, 255, 0.05); }
+code {
+  font-family: 'JetBrains Mono', monospace; background: rgba(226, 38, 88, 0.15);
+  color: #fb7185; padding: 4px 10px; border-radius: 6px; direction: ltr; font-size: 13.5px;
+}
+.msg { border-radius: 14px; padding: 16px; font-size: 14.5px; margin-bottom: 16px; line-height: 1.8; text-align: right; font-weight: 500; }
+.ok { background: rgba(16, 185, 129, 0.1); border-right: 4px solid #10b981; color: #6ee7b7; }
+.warn { background: rgba(245, 158, 11, 0.1); border-right: 4px solid #f59e0b; color: #fcd34d; }
+.err { background: rgba(226, 38, 88, 0.1); border-right: 4px solid #e22658; color: #fda4af; }
+button {
+  width: 100%; padding: 16px; border: none; border-radius: 16px;
+  background: linear-gradient(135deg, #8b0029, #c1123e);
+  color: #fff; font-size: 16px; font-weight: 700; cursor: pointer; transition: all 0.3s;
+  box-shadow: 0 8px 25px -5px rgba(193, 18, 62, 0.4); margin-top: 10px;
+}
+button:hover { transform: translateY(-2px); box-shadow: 0 12px 30px -5px rgba(193, 18, 62, 0.6); }
+.hint { margin-top: 20px; font-size: 12.5px; line-height: 1.9; color: #64748b; background: rgba(255,255,255,0.02); border-radius: 12px; padding: 14px; text-align: right; }
+.foot { margin-top: 25px; font-size: 12px; color: #475569; }
 </style>
 </head>
 <body>
 <div class="card">
 {% if state == 'invalid' %}
-  <div class="icon">❌</div>
-  <h1>لینک نامعتبر است</h1>
-  <p class="sub">این لینک وجود ندارد یا باطل شده است</p>
-  <div class="msg err">از پشتیبانی بخواه لینک جدید برایت ارسال کند.</div>
+  <div class="icon">⊗</div><h1>دسترسی غیرمجاز</h1><p class="sub">شناسه شبکه نامعتبر است</p>
+  <div class="msg err">این پیوند اعتباری ندارد. لطفاً پیوند صحیح را از مدیریت دریافت کنید.</div>
 {% elif state == 'expired' %}
-  <div class="icon">⌛</div>
-  <h1>اشتراک به پایان رسیده</h1>
-  <p class="sub">{{ user.name }}</p>
+  <div class="icon">◷</div><h1>پایان دوره</h1><p class="sub">{{ user.name }}</p>
   <div class="box">
-    <div class="row"><span>تاریخ انقضا</span><code>{{ user.expiry }}</code></div>
-    <div class="row"><span>IP ثبت‌شده</span><code>{{ user.ip }}</code></div>
+    <div class="row"><span>اعتبار تا</span><code>{{ user.expiry }}</code></div>
+    <div class="row"><span>آخرین شناسه</span><code>{{ user.ip or "ثبت نشده" }}</code></div>
   </div>
-  <div class="msg err">برای تمدید اشتراک با پشتیبانی در تماس باش.</div>
+  <div class="msg err">اشتراک شما به پایان رسیده است.</div>
 {% else %}
-  <div class="icon">🌐</div>
-  <h1>سلام {{ user.name }} 👋</h1>
-  <p class="sub">ثبت خودکار IP برای سرویس DNS</p>
+  <div class="icon">⬡</div><h1>خوش آمدید، {{ user.name }}</h1><p class="sub">دروازه احراز هویت شبکه</p>
 
   {% if result == 'ok' %}
-    <div class="msg ok">✅ IP جدیدت با موفقیت ثبت شد!<br>از این لحظه DNS با اینترنت فعلیت کار می‌کند.</div>
+    <div class="msg ok">✓ شناسه اینترنت شما روی شبکه تثبیت شد. سرویس فعال است.</div>
   {% elif result == 'already' %}
-    <div class="msg ok">✅ این IP قبلاً ثبت شده — همه‌چیز روبه‌راه است.</div>
+    <div class="msg ok">✓ شناسه شما از پیش تأیید شده است. تغییری نیاز نیست.</div>
   {% elif result == 'cooldown' %}
-    <div class="msg warn">⏳ لطفاً <b><span id="cd">{{ wait }}</span> ثانیه</b> دیگر دوباره تلاش کن.</div>
+    <div class="msg warn">⧖ برای ثبت مجدد باید <b id="cd">{{ wait }}</b> ثانیه دیگر صبر کنید.</div>
   {% endif %}
 
   <div class="box">
-    <div class="row"><span>📍 IP فعلی تو</span><code>{{ detected }}</code></div>
-    <div class="row"><span>📌 IP ثبت‌شده</span><code>{{ user.ip }}</code></div>
-    <div class="row"><span>📅 اعتبار تا</span><code>{{ user.expiry }} ({{ user.days_left }} روز)</code></div>
+    <div class="row"><span>شبکه فعلی شما</span><code>{{ detected }}</code></div>
+    <div class="row"><span>شبکه ثبت‌شده</span><code>{{ user.ip or "در انتظار ثبت..." }}</code></div>
+    <div class="row"><span>مانده اشتراک</span><code>{{ user.days_left }} روز</code></div>
   </div>
 
   {% if result != 'cooldown' %}
     {% if detected == user.ip %}
-      <div class="msg ok">🎉 IP تو ثبت است — نیازی به کاری نیست.</div>
+      <!-- IP is matching -->
     {% else %}
-      <div class="msg warn">⚠️ IP تو عوض شده! برای وصل شدن DNS، دکمه زیر را بزن:</div>
-      <form method="POST"><button type="submit">✅ ثبت IP فعلی من</button></form>
+      <div class="msg warn">شناسه اینترنت شما تغییر کرده است. برای اتصال مجدد تایید کنید:</div>
+      <form method="POST"><button type="submit">تثبیت شبکه فعلی</button></form>
     {% endif %}
   {% endif %}
 
-  <div class="hint">💡 هر وقت اینترنتت عوض شد (وای‌فای ↔ دیتای موبایل)، همین لینک را باز کن و دکمه ثبت را بزن.<br>⚠️ این صفحه را با همان اینترنتی باز کن که می‌خواهی DNS با آن کار کند.</div>
+  <div class="hint">نکته: در صورت تغییر اتصال (مثلاً جابجایی بین وای‌فای و دیتای موبایل)، مجدداً به این درگاه مراجعه کرده و شبکه جدید را تثبیت کنید.</div>
 {% endif %}
-  <div class="foot">🔒 این لینک اختصاصی توست — برای کسی نفرست</div>
+  <div class="foot">End-to-End Secure Link</div>
 </div>
 {% if result == 'cooldown' %}
 <script>
