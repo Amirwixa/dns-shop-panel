@@ -20,8 +20,8 @@ from . import database as db
 
 MAX_HELLO = 64 * 1024
 IDLE_TIMEOUT = 120
-CONNECT_TIMEOUT = 10
-FIRST_BYTES_TIMEOUT = 15
+CONNECT_TIMEOUT = 5
+FIRST_BYTES_TIMEOUT = 10
 MAX_CONCURRENT = 2000
 
 
@@ -136,8 +136,27 @@ async def read_http_host(reader: asyncio.StreamReader, prefix: bytes):
         return None, None
 
 
+_RESOLVE_CACHE = {}  # host -> (ips, expire_at)
+_RESOLVE_LOCK = threading.Lock()
+
+
 def resolve_target(host: str, upstreams):
     """Resolve hostname to IP using panel upstreams (dnslib), fallback to system resolver."""
+    now = time.time()
+    with _RESOLVE_LOCK:
+        hit = _RESOLVE_CACHE.get(host)
+        if hit and hit[1] > now:
+            return list(hit[0])
+    ips = _resolve_uncached(host, upstreams)
+    ttl = 120 if ips else 60  # negative cache for failures too
+    with _RESOLVE_LOCK:
+        if len(_RESOLVE_CACHE) > 2000:
+            _RESOLVE_CACHE.clear()
+        _RESOLVE_CACHE[host] = (list(ips), now + ttl)
+    return ips
+
+
+def _resolve_uncached(host: str, upstreams):
     try:
         from dnslib import DNSRecord, QTYPE, RCODE
         q = DNSRecord.question(host, "A")
@@ -165,6 +184,22 @@ def resolve_target(host: str, upstreams):
         return []
 
 
+def detect_warp_ip() -> str:
+    """Return WARP interface IPv4 (wg-quick 'warp' or warp-cli 'CloudflareWARP'), else ''."""
+    import subprocess
+    for dev in ("warp", "CloudflareWARP"):
+        try:
+            out = subprocess.run(["ip", "-4", "-o", "addr", "show", "dev", dev],
+                                 capture_output=True, text=True, timeout=5).stdout
+            for line in out.splitlines():
+                parts = line.split()
+                if "inet" in parts:
+                    return parts[parts.index("inet") + 1].split("/")[0]
+        except Exception:
+            continue
+    return ""
+
+
 class SNIProxy:
     def __init__(self, ports=(80, 443)):
         self.ports = ports
@@ -172,11 +207,15 @@ class SNIProxy:
         self.proxy_set = set()
         self.refuse_unlisted = True
         self.full_mode = False
+        self.warp_enabled = False
+        self.warp_ip = ""
+        self._warp_warned = False
         self.upstreams = ["8.8.8.8", "1.1.1.1"]
         self.log_queue = queue.Queue(maxsize=10000)
         self.sem = asyncio.Semaphore(MAX_CONCURRENT)
         self.running = True
         self._user_cache = {}   # ip -> (user_id, ts)
+        self._conn_ema = {}     # (host, ip) -> connect ms (learned lowest-latency order)
 
     # ---------- config ----------
     def reload_config(self):
@@ -184,6 +223,13 @@ class SNIProxy:
             s = db.get_all_settings()
             self.refuse_unlisted = s.get("refuse_unlisted", "1") == "1"
             self.full_mode = s.get("dns_mode", "smart") == "full"
+            self.warp_enabled = s.get("warp_enabled", "0") == "1"
+            self.warp_ip = detect_warp_ip() if self.warp_enabled else ""
+            if self.warp_enabled and not self.warp_ip and not self._warp_warned:
+                self._warp_warned = True
+                print("[SNI] WARN: warp_enabled=1 but no WARP interface found - using direct", flush=True)
+            if self.warp_ip:
+                self._warp_warned = False
             self.upstreams = [s.get("upstream1", "8.8.8.8"), s.get("upstream2", "1.1.1.1")]
             self.allowed_ips = db.get_active_ip_map()
             self.proxy_set = db.get_proxy_set()
@@ -192,7 +238,7 @@ class SNIProxy:
 
     def _reloader(self):
         while self.running:
-            time.sleep(30)
+            time.sleep(15)
             self.reload_config()
 
     def _log_worker(self):
@@ -213,9 +259,20 @@ class SNIProxy:
             pass
 
     def _user_id(self, ip):
-        u = self.allowed_ips.get(ip)
+        u = db.find_in_map(self.allowed_ips, ip)
         if u:
             return u["id"]
+        # INSTANT ACTIVATION: fast DB check before refusing (RAM refreshes every 15s)
+        try:
+            full = db.get_user_by_ip_smart(ip)
+        except Exception:
+            full = None
+        if full and not full["is_expired"] and full["status"] == "active":
+            try:
+                self.allowed_ips[db.normalize_ip(ip)] = full
+            except Exception:
+                pass
+            return full["id"]
         return None
 
     def _in_proxy_list(self, host: str) -> bool:
@@ -268,7 +325,8 @@ class SNIProxy:
             sni, raw = await read_tls_hello(rest_reader)
             if not sni:
                 self._log(user_id=uid, client_ip=client_ip, sni="", port=listen_port,
-                          duration_ms=int((time.time() - t0) * 1000), status="error")
+                          duration_ms=int((time.time() - t0) * 1000),
+                          status="tls_error", err_detail="no SNI in ClientHello")
                 close()
                 return
             target_host, initial_data, default_port = sni.strip().rstrip("."), raw, 443
@@ -288,24 +346,51 @@ class SNIProxy:
             return
 
         # 4) resolve + connect to real destination
+        t_dns = time.time()
         ips = await asyncio.get_event_loop().run_in_executor(None, resolve_target, target_host, self.upstreams)
+        dns_ms = int((time.time() - t_dns) * 1000)
         if not ips:
             self._log(user_id=uid, client_ip=client_ip, sni=target_host, port=listen_port,
-                      duration_ms=int((time.time() - t0) * 1000), status="error")
+                      duration_ms=int((time.time() - t0) * 1000), dns_ms=dns_ms,
+                      status="dns_fail", err_detail="upstream resolve failed")
             close()
             return
+        # learned lowest-latency first (unknown IPs keep original order via index)
+        ema = self._conn_ema
+        order = sorted(range(len(ips)), key=lambda i: (ema.get((target_host, ips[i]), 10**9), i))
         upstream_reader, upstream_writer, connected_ip = None, None, ""
-        for ip in ips:
-            try:
-                upstream_reader, upstream_writer = await asyncio.wait_for(
-                    asyncio.open_connection(ip, default_port), timeout=CONNECT_TIMEOUT)
-                connected_ip = ip
+        connect_ms, last_err, last_exc = 0, "tcp_error", ""
+        kw_list = [{"local_addr": (self.warp_ip, 0)}] if self.warp_ip else []
+        kw_list.append({})  # always fall back to direct
+        for i in order:
+            ip = ips[i]
+            for kw in kw_list:
+                t_c = time.time()
+                try:
+                    upstream_reader, upstream_writer = await asyncio.wait_for(
+                        asyncio.open_connection(ip, default_port, **kw), timeout=CONNECT_TIMEOUT)
+                    connected_ip = ip
+                    connect_ms = int((time.time() - t_c) * 1000)
+                    prev = ema.get((target_host, ip))
+                    ema[(target_host, ip)] = connect_ms if prev is None else int(prev * 0.7 + connect_ms * 0.3)
+                    break
+                except asyncio.TimeoutError:
+                    last_err, last_exc = "tcp_timeout", f"{ip}:{default_port} timeout"
+                    ema[(target_host, ip)] = ema.get((target_host, ip), 5000) + 5000
+                except ConnectionRefusedError:
+                    last_err, last_exc = "tcp_refused", f"{ip}:{default_port} refused"
+                    ema[(target_host, ip)] = ema.get((target_host, ip), 5000) + 5000
+                except (ConnectionError, OSError) as e:
+                    last_err, last_exc = "tcp_error", f"{ip}:{default_port} {type(e).__name__}"
+                    ema[(target_host, ip)] = ema.get((target_host, ip), 5000) + 5000
+            if upstream_reader is not None:
                 break
-            except (asyncio.TimeoutError, ConnectionError, OSError):
-                continue
+        if len(ema) > 5000:
+            ema.clear()
         if upstream_reader is None:
             self._log(user_id=uid, client_ip=client_ip, sni=target_host, port=listen_port,
-                      duration_ms=int((time.time() - t0) * 1000), status="error")
+                      duration_ms=int((time.time() - t0) * 1000), dns_ms=dns_ms,
+                      status=last_err, err_detail=last_exc)
             close()
             return
 
@@ -330,7 +415,8 @@ class SNIProxy:
                     pass
         self._log(user_id=uid, client_ip=client_ip, sni=target_host, target_ip=connected_ip,
                   port=default_port, bytes_up=stats[0], bytes_down=stats[1],
-                  duration_ms=int((time.time() - t0) * 1000), status="ok")
+                  duration_ms=int((time.time() - t0) * 1000), status="ok",
+                  dns_ms=dns_ms, connect_ms=connect_ms)
 
     @staticmethod
     async def _pipe(reader, writer, stats, idx):
@@ -356,10 +442,17 @@ class SNIProxy:
         threading.Thread(target=self._log_worker, daemon=True).start()
         servers = []
         for port in self.ports:
-            srv = await asyncio.start_server(
-                lambda r, w, p=port: self.handle(r, w, p), "0.0.0.0", port)
+            try:
+                srv = await asyncio.start_server(
+                    lambda r, w, p=port: self.handle(r, w, p), ["0.0.0.0", "::"], port)
+                print(f"[SNI] listening on 0.0.0.0:{port} + [::]:{port}", flush=True)
+            except Exception as e:
+                # no IPv6 on this host: IPv4-only is fine
+                print(f"[SNI] dual-stack failed ({e}), binding IPv4 only", flush=True)
+                srv = await asyncio.start_server(
+                    lambda r, w, p=port: self.handle(r, w, p), "0.0.0.0", port)
+                print(f"[SNI] listening on 0.0.0.0:{port}", flush=True)
             servers.append(srv)
-            print(f"[SNI] listening on 0.0.0.0:{port}", flush=True)
         async with servers[0]:
             await asyncio.gather(*(s.serve_forever() for s in servers))
 
