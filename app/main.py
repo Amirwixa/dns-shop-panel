@@ -2,6 +2,7 @@
 import os
 import re
 import time
+import secrets
 import threading
 import ipaddress
 from functools import wraps
@@ -9,16 +10,104 @@ from datetime import datetime
 from flask import Flask, request, session, redirect, url_for, render_template, jsonify, send_file
 
 from . import database as db
+from . import firewall as fw
+from . import diag as dg
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 BASE_DIR = os.path.dirname(APP_DIR)
+DATA_DIR = os.path.dirname(db.DB_PATH)
+
+
+def _persistent_secret_key() -> str:
+    """A random secret key is required for session cookies to be secure.
+    If PANEL_SECRET is set explicitly (recommended for multi-process/systemd
+    deployments), use it. Otherwise generate one ONCE and store it next to
+    the database so it survives restarts (a changing key would silently log
+    every admin out on every restart, and a time.time()-based fallback is
+    predictable)."""
+    env = os.environ.get("PANEL_SECRET")
+    if env:
+        return env
+    os.makedirs(DATA_DIR, exist_ok=True)
+    path = os.path.join(DATA_DIR, "secret.key")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            key = f.read().strip()
+            if key:
+                return key
+    except OSError:
+        pass
+    key = secrets.token_hex(32)
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(key)
+    except FileExistsError:
+        with open(path, "r", encoding="utf-8") as f:
+            key = f.read().strip() or key
+    except OSError:
+        pass
+    return key
+
 
 app = Flask(__name__, template_folder=os.path.join(APP_DIR, "templates"),
             static_folder=os.path.join(APP_DIR, "static"))
-app.secret_key = os.environ.get("PANEL_SECRET", "change-me-please-" + str(time.time()))
+app.secret_key = _persistent_secret_key()
 app.config["JSON_AS_ASCII"] = False
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    # Panel is served over plain HTTP by default (see README); only mark the
+    # cookie Secure when we know we're behind TLS/HTTPS, otherwise the
+    # browser would silently drop it and nobody could log in.
+    SESSION_COOKIE_SECURE=os.environ.get("PANEL_HTTPS", "0") == "1",
+    PERMANENT_SESSION_LIFETIME=int(os.environ.get("SESSION_LIFETIME_SEC", "86400")),
+)
 
 START_TIME = time.time()
+
+
+@app.after_request
+def _security_headers(resp):
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["X-Frame-Options"] = "DENY"
+    resp.headers["Referrer-Policy"] = "same-origin"
+    return resp
+
+
+# ---------- login brute-force protection ----------
+_LOGIN_ATTEMPTS = {}  # key(ip or ip+username) -> [failure_timestamps]
+_LOGIN_LOCK = threading.Lock()
+LOGIN_MAX_FAILS = 5
+LOGIN_WINDOW_SEC = 300      # count failures within this window
+LOGIN_LOCKOUT_SEC = 300     # lock the key out for this long once tripped
+
+
+def _login_key(ip, username):
+    return f"{ip}:{username.lower()}"
+
+
+def _login_blocked(ip, username):
+    key = _login_key(ip, username)
+    now = time.time()
+    with _LOGIN_LOCK:
+        fails = [t for t in _LOGIN_ATTEMPTS.get(key, []) if now - t < LOGIN_WINDOW_SEC]
+        _LOGIN_ATTEMPTS[key] = fails
+        if len(fails) >= LOGIN_MAX_FAILS:
+            return int(LOGIN_LOCKOUT_SEC - (now - fails[-1]))
+    return 0
+
+
+def _login_record_failure(ip, username):
+    key = _login_key(ip, username)
+    with _LOGIN_LOCK:
+        _LOGIN_ATTEMPTS.setdefault(key, []).append(time.time())
+
+
+def _login_clear(ip, username):
+    key = _login_key(ip, username)
+    with _LOGIN_LOCK:
+        _LOGIN_ATTEMPTS.pop(key, None)
 
 
 # ---------- helpers ----------
@@ -101,11 +190,22 @@ def login():
     data = request.get_json(silent=True) or request.form
     username = (data.get("username") or "").strip()
     password = (data.get("password") or "")
+    client_ip = get_client_ip()
+
+    wait = _login_blocked(client_ip, username)
+    if wait > 0:
+        return jsonify({"ok": False,
+                        "error": f"تلاش‌های ناموفق زیاد. {wait} ثانیه دیگر دوباره امتحان کن."}), 429
+
     admin = db.get_admin(username)
     if admin and db.verify_password(password, admin["password_hash"]):
+        db.upgrade_password_hash_if_needed(username, password, admin["password_hash"])
+        _login_clear(client_ip, username)
+        session.clear()
         session["admin"] = username
         session.permanent = True
         return jsonify({"ok": True})
+    _login_record_failure(client_ip, username)
     return jsonify({"ok": False, "error": "نام کاربری یا رمز عبور اشتباه است"}), 401
 
 
@@ -186,7 +286,7 @@ def api_users_create():
         return jsonify({"ok": False, "error": "مدت اعتبار نامعتبر است"}), 400
     if not name:
         return jsonify({"ok": False, "error": "نام کاربر الزامی است"}), 400
-    if not valid_ip(ip):
+    if ip and not valid_ip(ip):
         return jsonify({"ok": False, "error": "آدرس IP نامعتبر است"}), 400
     if days < 1 or days > 3650:
         return jsonify({"ok": False, "error": "مدت اعتبار باید بین ۱ تا ۳۶۵۰ روز باشد"}), 400
@@ -340,7 +440,8 @@ def api_settings_set():
     allowed = {"upstream1", "upstream2", "upstream_timeout", "cache_enabled",
                "cache_ttl", "cache_max", "log_enabled", "log_retention_days",
                "blocklist_enabled", "refuse_unlisted", "server_ip", "sni_enabled",
-               "link_cooldown_sec", "dns_mode"}
+               "link_cooldown_sec", "dns_mode", "warp_enabled",
+               "server_ipv6", "firewall_extra_ports"}
     clean = {k: str(v).strip() for k, v in data.items() if k in allowed}
     if "upstream1" in clean and not valid_ip(clean["upstream1"]):
         return jsonify({"ok": False, "error": "آپ‌استریم ۱ نامعتبر است"}), 400
@@ -348,6 +449,18 @@ def api_settings_set():
         return jsonify({"ok": False, "error": "آپ‌استریم ۲ نامعتبر است"}), 400
     if "server_ip" in clean and clean["server_ip"] and not valid_ip(clean["server_ip"]):
         return jsonify({"ok": False, "error": "IP سرور نامعتبر است"}), 400
+    if "server_ipv6" in clean and clean["server_ipv6"]:
+        try:
+            import ipaddress as _ip
+            if not isinstance(_ip.ip_address(clean["server_ipv6"]), _ip.IPv6Address):
+                raise ValueError()
+        except Exception:
+            return jsonify({"ok": False, "error": "IPv6 سرور نامعتبر است"}), 400
+    if "firewall_extra_ports" in clean and clean["firewall_extra_ports"]:
+        try:
+            fw.parse_extra_ports(clean["firewall_extra_ports"])
+        except ValueError:
+            return jsonify({"ok": False, "error": "فرمت پورت‌های اضافی فایروال نامعتبر است"}), 400
     if "link_cooldown_sec" in clean:
         try:
             cd = int(clean["link_cooldown_sec"])
@@ -358,6 +471,8 @@ def api_settings_set():
             return jsonify({"ok": False, "error": "مقدار cooldown نامعتبر است"}), 400
     if "dns_mode" in clean and clean["dns_mode"] not in ("smart", "full"):
         return jsonify({"ok": False, "error": "حالت DNS نامعتبر است"}), 400
+    if "warp_enabled" in clean and clean["warp_enabled"] not in ("0", "1"):
+        return jsonify({"ok": False, "error": "مقدار وارپ نامعتبر است"}), 400
     db.set_settings(clean)
     # DNS server reloads config every 30s automatically
     return jsonify({"ok": True})
@@ -459,7 +574,7 @@ def api_proxy_add():
             if not d or d.startswith("#"):
                 continue
             if valid_domain(d):
-                db.add_proxy(d)
+                db.add_proxy(d, (data.get("profile") or "general"))
                 added += 1
             else:
                 bad += 1
@@ -467,7 +582,7 @@ def api_proxy_add():
     domain = (data.get("domain") or "").strip().lower()
     if not valid_domain(domain):
         return jsonify({"ok": False, "error": "دامنه نامعتبر است"}), 400
-    db.add_proxy(domain)
+    db.add_proxy(domain, (data.get("profile") or "general"))
     return jsonify({"ok": True})
 
 
@@ -516,6 +631,269 @@ def api_proxy_logs():
 def api_proxy_logs_clear():
     db.clear_proxy_logs()
     return jsonify({"ok": True})
+
+
+# ---------- restore backup ----------
+@app.route("/api/restore", methods=["POST"])
+@login_required
+def api_restore():
+    f = request.files.get("file")
+    if not f or not f.filename:
+        return jsonify({"ok": False, "error": "فایلی انتخاب نشده است"}), 400
+    if (request.content_length or 0) > 200 * 1024 * 1024:
+        return jsonify({"ok": False, "error": "حجم فایل بیش از ۲۰۰ مگابایت است"}), 413
+    import sqlite3, shutil, tempfile
+    data_dir = os.path.dirname(db.DB_PATH)
+    os.makedirs(data_dir, exist_ok=True)
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".db", dir=data_dir)
+    try:
+        f.save(tmp.name)
+        tmp.close()
+        # validate: must be a DNS-panel database
+        try:
+            c = sqlite3.connect(tmp.name)
+            tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            c.close()
+        except Exception:
+            return jsonify({"ok": False, "error": "فایل معتبر نیست (دیتابیس SQLite نیست)"}), 400
+        need = {"users", "admins", "settings"}
+        if not need.issubset(tables):
+            return jsonify({"ok": False, "error": "این فایل بکاپ پنل DNS نیست"}), 400
+        # checkpoint current WAL, safety-backup current DB (keep last 5)
+        try:
+            with db.get_db() as conn:
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+        except Exception:
+            pass
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        safety = os.path.join(data_dir, f"panel.db.before-restore-{stamp}")
+        try:
+            if os.path.exists(db.DB_PATH):
+                shutil.copy2(db.DB_PATH, safety)
+            olds = sorted([os.path.join(data_dir, x) for x in os.listdir(data_dir)
+                           if x.startswith("panel.db.before-restore-")])
+            for old in olds[:-5]:
+                os.remove(old)
+        except Exception:
+            pass
+        os.replace(tmp.name, db.DB_PATH)
+        for suf in ("-wal", "-shm"):
+            try:
+                os.remove(db.DB_PATH + suf)
+            except OSError:
+                pass
+        try:
+            db.init_db()  # migrate restored (possibly older) schema forward
+            n_users = len(db.list_users())
+        except Exception as e:
+            return jsonify({"ok": False, "error": f"ریستور انجام شد ولی خطا در خواندن: {e}"}), 500
+        session.clear()  # force re-login (admin creds come from the backup now)
+        return jsonify({"ok": True, "users": n_users, "safety_backup": os.path.basename(safety)})
+    finally:
+        try:
+            os.remove(tmp.name)
+        except OSError:
+            pass
+
+
+# ---------- gaming preset ----------
+@app.route("/api/preset/gaming", methods=["POST"])
+@login_required
+def api_preset_gaming():
+    db.set_setting("dns_mode", "smart")
+    removed = db.remove_deprecated_proxy()
+    db.seed_proxy_domains()
+    return jsonify({"ok": True, "mode": "smart",
+                    "removed_deprecated": removed, "proxy_count": db.proxy_count()})
+
+
+# ---------- WARP (optional outbound via Cloudflare) ----------
+def _detect_warp_ip():
+    import subprocess
+    for dev in ("warp", "CloudflareWARP"):
+        try:
+            out = subprocess.run(["ip", "-4", "-o", "addr", "show", "dev", dev],
+                                 capture_output=True, text=True, timeout=5).stdout
+            for line in out.splitlines():
+                parts = line.split()
+                if "inet" in parts:
+                    return parts[parts.index("inet") + 1].split("/")[0]
+        except Exception:
+            continue
+    return ""
+
+
+@app.route("/api/warp/status", methods=["GET"])
+@login_required
+def api_warp_status():
+    import subprocess, glob
+    warp_ip = _detect_warp_ip()
+    installed = os.path.exists("/etc/wireguard/warp.conf") or bool(glob.glob("/etc/wireguard/wgcf*"))
+    exit_ip = ""
+    if warp_ip:
+        try:
+            r = subprocess.run(["curl", "-s", "--max-time", "8", "--interface", warp_ip,
+                                "https://api.ipify.org"],
+                               capture_output=True, text=True, timeout=10)
+            exit_ip = (r.stdout or "").strip()
+        except Exception:
+            pass
+    return jsonify({"ok": True, "installed": installed, "up": bool(warp_ip),
+                    "warp_ip": warp_ip, "exit_ip": exit_ip,
+                    "enabled": db.get_setting("warp_enabled", "0") == "1"})
+
+
+@app.route("/api/warp", methods=["POST"])
+@login_required
+def api_warp_set():
+    data = request.get_json(force=True, silent=True) or {}
+    en = str(data.get("enabled", "0")).strip()
+    if en not in ("0", "1"):
+        return jsonify({"ok": False, "error": "مقدار نامعتبر"}), 400
+    if en == "1" and not _detect_warp_ip():
+        return jsonify({"ok": False, "error": "وارپ روی سرور فعال نیست! اول install-warp.sh را اجرا کن"}), 400
+    db.set_setting("warp_enabled", en)
+    return jsonify({"ok": True, "enabled": en == "1"})
+
+
+# ---------- firewall (UFW) ----------
+@app.route("/api/firewall", methods=["GET"])
+@login_required
+def api_firewall_status():
+    st = fw.status()
+    st["extras"] = db.get_setting("firewall_extra_ports", "")
+    st["ssh_port"] = fw.ssh_port()
+    st["panel_port"] = fw.panel_port()
+    return jsonify({"ok": True, **st})
+
+
+@app.route("/api/firewall", methods=["POST"])
+@login_required
+def api_firewall_set():
+    data = request.get_json(force=True, silent=True) or {}
+    action = str(data.get("action", "")).strip().lower()
+    if action == "enable":
+        r = fw.enable_safe(db.get_setting("firewall_extra_ports", ""))
+        return jsonify(r), (200 if r["ok"] else 400)
+    if action == "disable":
+        return jsonify(fw.disable())
+    return jsonify({"ok": False, "error": "action نامعتبر"}), 400
+
+
+@app.route("/api/firewall/allow", methods=["POST"])
+@login_required
+def api_firewall_allow():
+    data = request.get_json(force=True, silent=True) or {}
+    r = fw.allow(data.get("port"), data.get("proto", "both"))
+    if r["ok"]:
+        _sync_extras(add=f"{data.get('port')}/{fw.validate_proto(data.get('proto', 'both'))}")
+    return jsonify(r), (200 if r["ok"] else 400)
+
+
+@app.route("/api/firewall/delete", methods=["POST"])
+@login_required
+def api_firewall_delete():
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        p = fw.validate_port(data.get("port"))
+        pr = fw.validate_proto(data.get("proto", "both"))
+    except ValueError:
+        return jsonify({"ok": False, "error": "پورت یا پروتکل نامعتبر است"}), 400
+    if (p, pr) in [(53, "udp"), (53, "tcp"), (80, "tcp"), (443, "tcp"),
+                   (fw.ssh_port(), "tcp"), (fw.panel_port(), "tcp")]:
+        return jsonify({"ok": False, "error": "⛔ حذف پورت حیاتی (SSH/پنل/DNS/پروکسی) ممنوع است"}), 400
+    r = fw.delete(p, pr)
+    if r["ok"]:
+        _sync_extras(remove=f"{p}/{pr}")
+    return jsonify(r), (200 if r["ok"] else 400)
+
+
+def _sync_extras(add="", remove=""):
+    """Keep firewall_extra_ports setting in sync with panel-managed rules."""
+    try:
+        cur = [t.strip() for t in db.get_setting("firewall_extra_ports", "").split(",") if t.strip()]
+        if remove and remove in cur:
+            cur.remove(remove)
+        if add and add not in cur:
+            cur.append(add)
+        db.set_setting("firewall_extra_ports", ",".join(cur))
+    except Exception:
+        pass
+
+
+@app.route("/api/detect-ipv6", methods=["GET"])
+@login_required
+def api_detect_ipv6():
+    import subprocess
+    try:
+        r = subprocess.run(["curl", "-s", "-6", "--max-time", "10", "https://api6.ipify.org"],
+                           capture_output=True, text=True, timeout=12)
+        ip = (r.stdout or "").strip()
+        import ipaddress as _ip
+        if isinstance(_ip.ip_address(ip), _ip.IPv6Address):
+            return jsonify({"ok": True, "ipv6": ip})
+    except Exception:
+        pass
+    return jsonify({"ok": False, "error": "سرور IPv6 عمومی ندارد یا در دسترس نیست"}), 400
+
+
+# ---------- auto-discovery ----------
+@app.route("/api/discover", methods=["GET"])
+@login_required
+def api_discover():
+    d = db.discover_candidates()
+    d["profiles"] = db.PROXY_PROFILES
+    return jsonify({"ok": True, **d})
+
+
+@app.route("/api/discover/add", methods=["POST"])
+@login_required
+def api_discover_add():
+    data = request.get_json(force=True, silent=True) or {}
+    domain = (data.get("domain") or "").strip().lower().rstrip(".")
+    if not valid_domain(domain):
+        return jsonify({"ok": False, "error": "دامنه نامعتبر است"}), 400
+    db.add_proxy(domain, data.get("profile") or "general")
+    return jsonify({"ok": True, "count": db.proxy_count()})
+
+
+@app.route("/api/proxy/seed-profile", methods=["POST"])
+@login_required
+def api_proxy_seed_profile():
+    data = request.get_json(force=True, silent=True) or {}
+    profile = (data.get("profile") or "").strip()
+    if profile not in db.PROXY_PROFILES:
+        return jsonify({"ok": False, "error": "پروفایل نامعتبر است"}), 400
+    return jsonify({"ok": True, "count": db.seed_profile(profile)})
+
+
+# ---------- diagnostics ----------
+def _diag_upstreams():
+    s = db.get_all_settings()
+    return [s.get("upstream1", "8.8.8.8"), s.get("upstream2", "1.1.1.1")]
+
+
+@app.route("/api/diag", methods=["GET"])
+@login_required
+def api_diag():
+    fresh = request.args.get("fresh", "0") == "1"
+    return jsonify(dg.run(_diag_upstreams(), force=fresh))
+
+
+@app.route("/api/diag/full", methods=["GET"])
+@login_required
+def api_diag_full():
+    """Deep scan: test every domain currently in the proxy list (live pool),
+    not just the curated default set. Can take a while with a big list."""
+    fresh = request.args.get("fresh", "0") == "1"
+    domains = db.get_proxy_set()
+    return jsonify(dg.full_scan(domains, force=fresh))
+
+
+@app.route("/api/service-status", methods=["GET"])
+def api_service_status():
+    # public (customer link page): summary only, cached
+    return jsonify(dg.summary(_diag_upstreams()))
 
 
 # ---------- admin ----------
