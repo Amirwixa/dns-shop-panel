@@ -9,7 +9,7 @@
 set -e
 
 # ↓↓↓ EDIT THIS after creating your GitHub repo (or pass GITHUB_REPO env) ↓↓↓
-REPO="${GITHUB_REPO:-Amirwixa/dns-shop-panel}"
+REPO="${GITHUB_REPO:-YOUR_USER/dns-shop-panel}"
 BRANCH="${GITHUB_BRANCH:-main}"
 DEST="${INSTALL_SRC:-/root/dns-shop-panel}"
 TARBALL_URL="${REPO_TARBALL_URL:-https://github.com/$REPO/archive/refs/heads/$BRANCH.tar.gz}"
